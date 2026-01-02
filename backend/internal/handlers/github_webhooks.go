@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -40,6 +41,13 @@ func (h *GitHubWebhooksHandler) Receive() fiber.Handler {
 		delivery := strings.TrimSpace(c.Get("X-GitHub-Delivery"))
 		event := strings.TrimSpace(c.Get("X-GitHub-Event"))
 		sig := strings.TrimSpace(c.Get("X-Hub-Signature-256"))
+
+		// Log webhook reception for debugging
+		slog.Info("GitHub webhook received",
+			"event", event,
+			"delivery_id", delivery,
+			"path", c.Path(),
+		)
 
 		body := c.Body()
 

@@ -133,10 +133,14 @@ SELECT
   p.webhook_created_at, 
   p.created_at, 
   p.updated_at,
-  e.name AS ecosystem_name
+  e.name AS ecosystem_name,
+  p.language,
+  p.tags,
+  p.category
 FROM projects p
 LEFT JOIN ecosystems e ON p.ecosystem_id = e.id
 WHERE p.owner_user_id = $1
+  AND p.deleted_at IS NULL
 ORDER BY p.created_at DESC
 `, userID)
 		if err != nil {
@@ -156,9 +160,18 @@ ORDER BY p.created_at DESC
 			var webhookCreatedAt *time.Time
 			var createdAt, updatedAt time.Time
 			var ecosystemName *string
+			var language *string
+			var tagsJSON []byte
+			var category *string
 
-			if err := rows.Scan(&id, &fullName, &status, &repoID, &verifiedAt, &verErr, &webhookID, &webhookURL, &webhookCreatedAt, &createdAt, &updatedAt, &ecosystemName); err != nil {
+			if err := rows.Scan(&id, &fullName, &status, &repoID, &verifiedAt, &verErr, &webhookID, &webhookURL, &webhookCreatedAt, &createdAt, &updatedAt, &ecosystemName, &language, &tagsJSON, &category); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "projects_list_failed"})
+			}
+
+			// Parse tags JSONB
+			var tags []string
+			if len(tagsJSON) > 0 {
+				json.Unmarshal(tagsJSON, &tags)
 			}
 
 			out = append(out, fiber.Map{
@@ -174,10 +187,18 @@ ORDER BY p.created_at DESC
 				"created_at":         createdAt,
 				"updated_at":         updatedAt,
 				"ecosystem_name":     ecosystemName,
+				"language":           language,
+				"tags":               tags,
+				"category":           category,
 			})
 		}
 
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{"projects": out})
+		// Always return an array, even if empty
+		if out == nil {
+			out = []fiber.Map{}
+		}
+
+		return c.Status(fiber.StatusOK).JSON(out)
 	}
 }
 

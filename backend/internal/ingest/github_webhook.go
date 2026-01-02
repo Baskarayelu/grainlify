@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -102,7 +103,112 @@ VALUES ($1::uuid, 'sync_issues', 'pending', now()),
 `, *projectID)
 	}
 
+	// Handle GitHub App installation events
+	if e.Event == "installation" || e.Event == "installation_repositories" {
+		slog.Info("received installation webhook",
+			"event", e.Event,
+			"action", e.Action,
+			"delivery_id", e.DeliveryID,
+		)
+		i.handleInstallationEvent(ctx, e, env)
+	}
+
 	return nil
+}
+
+// handleInstallationEvent handles GitHub App installation/uninstallation events
+func (i *GitHubWebhookIngestor) handleInstallationEvent(ctx context.Context, e events.GitHubWebhookReceived, env ghWebhookEnvelope) {
+	var installationPayload ghInstallationPayload
+	if err := json.Unmarshal(e.Payload, &installationPayload); err != nil {
+		slog.Error("failed to parse installation webhook payload", "error", err)
+		return
+	}
+
+	action := strings.ToLower(strings.TrimSpace(installationPayload.Action))
+	installationID := installationPayload.Installation.ID.String() // Convert json.Number to string
+
+	slog.Info("handling installation event",
+		"event", e.Event,
+		"action", action,
+		"installation_id", installationID,
+	)
+
+	if action == "deleted" {
+		// Installation was completely uninstalled - mark all projects from this installation as deleted
+		result, err := i.Pool.Exec(ctx, `
+UPDATE projects
+SET deleted_at = now(),
+    status = 'rejected',
+    updated_at = now()
+WHERE github_app_installation_id = $1
+  AND deleted_at IS NULL
+`, installationID)
+		if err != nil {
+			slog.Error("failed to delete projects for installation", "installation_id", installationID, "error", err)
+			return
+		}
+		rowsAffected := result.RowsAffected()
+		slog.Info("marked projects as deleted for installation",
+			"installation_id", installationID,
+			"rows_affected", rowsAffected,
+		)
+	} else if action == "removed" && e.Event == "installation_repositories" {
+		// Specific repositories were removed from installation
+		if installationPayload.RepositoriesRemoved != nil {
+			slog.Info("removing repositories from installation",
+				"count", len(installationPayload.RepositoriesRemoved),
+				"installation_id", installationID,
+			)
+			for _, repo := range installationPayload.RepositoriesRemoved {
+				repoFullName := strings.TrimSpace(repo.FullName)
+				if repoFullName != "" {
+					result, err := i.Pool.Exec(ctx, `
+UPDATE projects
+SET deleted_at = now(),
+    status = 'rejected',
+    updated_at = now()
+WHERE github_full_name = $1
+  AND (github_app_installation_id = $2 OR github_app_installation_id IS NULL)
+  AND deleted_at IS NULL
+`, repoFullName, installationID)
+					if err != nil {
+						slog.Error("failed to delete project", "repo", repoFullName, "error", err)
+						continue
+					}
+					rowsAffected := result.RowsAffected()
+					if rowsAffected > 0 {
+						slog.Info("marked project as deleted",
+							"repo", repoFullName,
+							"installation_id", installationID,
+						)
+					} else {
+						slog.Warn("no project found to delete",
+							"repo", repoFullName,
+							"installation_id", installationID,
+						)
+					}
+				}
+			}
+		}
+	} else if action == "added" && e.Event == "installation_repositories" {
+		// Repositories were added back to installation - restore them
+		if installationPayload.RepositoriesAdded != nil {
+			for _, repo := range installationPayload.RepositoriesAdded {
+				repoFullName := strings.TrimSpace(repo.FullName)
+				if repoFullName != "" {
+					_, _ = i.Pool.Exec(ctx, `
+UPDATE projects
+SET deleted_at = NULL,
+    status = 'verified',
+    updated_at = now()
+WHERE github_full_name = $1
+  AND github_app_installation_id = $2
+  AND deleted_at IS NOT NULL
+`, repoFullName, installationID)
+				}
+			}
+		}
+	}
 }
 
 type ghWebhookEnvelope struct {
@@ -148,12 +254,27 @@ type ghPullRequestPayload struct {
 	ClosedAt  *time.Time    `json:"closed_at"`
 }
 
+type ghInstallationPayload struct {
+	Action                string                    `json:"action"`
+	Installation           ghInstallationInfo        `json:"installation"`
+	RepositoriesRemoved    []ghRepoPayload           `json:"repositories_removed,omitempty"`
+	RepositoriesAdded      []ghRepoPayload           `json:"repositories_added,omitempty"`
+	RepositorySelection    string                    `json:"repository_selection,omitempty"`
+}
+
+type ghInstallationInfo struct {
+	ID json.Number `json:"id"` // GitHub returns installation ID as a number
+}
+
 func nullIfEmpty(s string) any {
 	if strings.TrimSpace(s) == "" {
 		return nil
 	}
 	return s
 }
+
+
+
 
 
 
