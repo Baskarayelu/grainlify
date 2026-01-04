@@ -458,6 +458,11 @@ LIMIT $%d OFFSET $%d
 		}
 		defer rows.Close()
 
+		// Enrich with GitHub data (best effort, in background)
+		ctx, cancel := context.WithTimeout(c.Context(), 8*time.Second)
+		defer cancel()
+		gh := github.NewClient()
+
 		var out []fiber.Map
 		for rows.Next() {
 			var id uuid.UUID
@@ -487,6 +492,27 @@ LIMIT $%d OFFSET $%d
 			forks := 0
 			if forksCount != nil {
 				forks = *forksCount
+			}
+
+			// Fetch fresh data from GitHub if stars/forks are 0 or nil (best effort)
+			// This ensures we have up-to-date metrics even if webhook sync hasn't run yet
+			if stars == 0 || forks == 0 {
+				if repo, err := gh.GetRepo(ctx, "", fullName); err == nil {
+					// Prefer live counts from GitHub if available
+					if repo.StargazersCount > 0 {
+						stars = repo.StargazersCount
+					}
+					if repo.ForksCount > 0 {
+						forks = repo.ForksCount
+					}
+					// Best-effort persist (non-blocking)
+					go func(projectID uuid.UUID, st, fk int) {
+						_, _ = h.db.Pool.Exec(context.Background(), `
+UPDATE projects SET stars_count=$2, forks_count=$3, updated_at=now()
+WHERE id=$1
+`, projectID, st, fk)
+					}(id, stars, forks)
+				}
 			}
 
 			out = append(out, fiber.Map{
