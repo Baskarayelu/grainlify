@@ -164,6 +164,30 @@ export const getProfileActivity = (limit = 50, offset = 0) =>
     offset: number;
   }>(`/profile/activity?limit=${limit}&offset=${offset}`, { requiresAuth: true });
 
+export const getPublicProfile = (userId?: string, login?: string) => {
+  const params = new URLSearchParams();
+  if (userId) params.append('user_id', userId);
+  if (login) params.append('login', login);
+  return apiRequest<{
+    login: string;
+    user_id: string;
+    avatar_url?: string;
+    contributions_count: number;
+    projects_contributed_to_count: number;
+    projects_led_count: number;
+    languages: Array<{ language: string; contribution_count: number }>;
+    ecosystems: Array<{ ecosystem_name: string; contribution_count: number }>;
+    bio?: string;
+    website?: string;
+    rank: {
+      position: number | null;
+      tier: string;
+      tier_name: string;
+      tier_color: string;
+    };
+  }>(`/profile/public?${params.toString()}`, { requiresAuth: false });
+};
+
 export const updateProfile = (data: {
   first_name?: string;
   last_name?: string;

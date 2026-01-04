@@ -44,6 +44,28 @@ export function Dashboard() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeRole, setActiveRole] = useState<'contributor' | 'maintainer' | 'admin'>('contributor');
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
+  const [viewingUserId, setViewingUserId] = useState<string | null>(null);
+  const [viewingUserLogin, setViewingUserLogin] = useState<string | null>(null);
+
+  // Check URL params for viewing other users' profiles
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const userParam = params.get('user');
+    const pageParam = params.get('page');
+    
+    if (pageParam === 'profile' && userParam) {
+      setCurrentPage('profile');
+      // Check if it's a UUID (user_id) or a username (login)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(userParam)) {
+        setViewingUserId(userParam);
+        setViewingUserLogin(null);
+      } else {
+        setViewingUserLogin(userParam);
+        setViewingUserId(null);
+      }
+    }
+  }, []);
 
   // Keyboard shortcut for search (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -400,7 +422,18 @@ export function Dashboard() {
                 )}
                 {currentPage === 'contributors' && <ContributorsPage />}
                 {currentPage === 'maintainers' && <MaintainersPage />}
-                {currentPage === 'profile' && <ProfilePage />}
+                {currentPage === 'profile' && (
+                  <ProfilePage 
+                    viewingUserId={viewingUserId}
+                    viewingUserLogin={viewingUserLogin}
+                    onBack={() => {
+                      setViewingUserId(null);
+                      setViewingUserLogin(null);
+                      setCurrentPage('leaderboard');
+                      window.history.replaceState({}, '', '/dashboard?page=leaderboard');
+                    }}
+                  />
+                )}
                 {currentPage === 'data' && activeRole === 'admin' && <DataPage />}
                 {currentPage === 'leaderboard' && <LeaderboardPage />}
                 {currentPage === 'blog' && <BlogPage />}

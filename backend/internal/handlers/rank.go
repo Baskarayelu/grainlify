@@ -11,6 +11,7 @@ const (
 	RankGold      RankTier = "gold"      // Top 51-100
 	RankSilver    RankTier = "silver"     // Top 101-500
 	RankBronze    RankTier = "bronze"    // Below 500 or no contributions
+	RankTierUnranked RankTier = "unranked" // No contributions or not in ranking
 )
 
 // GetRankTier returns the rank tier based on leaderboard position
@@ -57,6 +58,8 @@ func GetRankTierDisplayName(tier RankTier) string {
 		return "Silver"
 	case RankBronze:
 		return "Bronze"
+	case RankTierUnranked:
+		return "Unranked"
 	default:
 		return "Bronze"
 	}
@@ -79,6 +82,8 @@ func GetRankTierColor(tier RankTier) string {
 		return "#C0C0C0" // Silver
 	case RankBronze:
 		return "#CD7F32" // Bronze
+	case RankTierUnranked:
+		return "#7a6b5a" // Gray
 	default:
 		return "#CD7F32"
 	}

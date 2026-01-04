@@ -47,6 +47,14 @@ SELECT login
 FROM github_accounts
 WHERE user_id = $1
 `, userID).Scan(&githubLogin)
+
+		// Get user profile fields (bio, website) from users table
+		var bio, website *string
+		_ = h.db.Pool.QueryRow(c.Context(), `
+SELECT bio, website
+FROM users
+WHERE id = $1
+`, userID).Scan(&bio, &website)
 		if err != nil {
 			// User doesn't have GitHub account linked
 			return c.Status(fiber.StatusOK).JSON(fiber.Map{
@@ -263,6 +271,14 @@ WHERE p.status = 'verified'
 				"tier_name":  rankTierName,
 				"tier_color": rankTierColor,
 			},
+		}
+
+		// Add bio and website if available
+		if bio != nil && *bio != "" {
+			response["bio"] = *bio
+		}
+		if website != nil && *website != "" {
+			response["website"] = *website
 		}
 
 		return c.Status(fiber.StatusOK).JSON(response)
@@ -526,6 +542,319 @@ SELECT
 			"limit":     limit,
 			"offset":     offset,
 		})
+	}
+}
+
+// PublicProfile returns public profile data for a user by user_id or GitHub login
+// This endpoint is public and doesn't require authentication
+func (h *UserProfileHandler) PublicProfile() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if h.db == nil || h.db.Pool == nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "db_not_configured"})
+		}
+
+		// Get identifier from query params (user_id or login)
+		userIDParam := c.Query("user_id")
+		loginParam := c.Query("login")
+
+		if userIDParam == "" && loginParam == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing_identifier"})
+		}
+
+		var githubLogin *string
+		var userID *uuid.UUID
+		var bio, website *string
+
+		// If user_id is provided, get GitHub login from it
+		if userIDParam != "" {
+			parsedUserID, err := uuid.Parse(userIDParam)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_user_id"})
+			}
+			userID = &parsedUserID
+
+			err = h.db.Pool.QueryRow(c.Context(), `
+SELECT login
+FROM github_accounts
+WHERE user_id = $1
+`, parsedUserID).Scan(&githubLogin)
+			if err != nil {
+				// User doesn't have GitHub account linked
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user_not_found"})
+			}
+
+			// Get profile fields
+			_ = h.db.Pool.QueryRow(c.Context(), `
+SELECT bio, website
+FROM users
+WHERE id = $1
+`, parsedUserID).Scan(&bio, &website)
+		} else {
+			// If login is provided, get user_id from it
+			loginParamLower := strings.ToLower(loginParam)
+			var foundUserID uuid.UUID
+			err := h.db.Pool.QueryRow(c.Context(), `
+SELECT ga.user_id
+FROM github_accounts ga
+WHERE LOWER(ga.login) = $1
+`, loginParamLower).Scan(&foundUserID)
+			if err != nil {
+				// User not found in database, but they might still be a contributor
+				// Return basic profile with just the login
+				return c.Status(fiber.StatusOK).JSON(fiber.Map{
+					"login":            loginParam,
+					"user_id":          "",
+					"contributions_count": 0,
+					"languages":        []fiber.Map{},
+					"ecosystems":       []fiber.Map{},
+					"bio":              nil,
+					"website":          nil,
+					"rank": fiber.Map{
+						"position":   nil,
+						"tier":       "unranked",
+						"tier_name":  "Unranked",
+						"tier_color": "#7a6b5a",
+					},
+				})
+			}
+			userID = &foundUserID
+			githubLogin = &loginParam
+
+			// Get profile fields
+			_ = h.db.Pool.QueryRow(c.Context(), `
+SELECT bio, website
+FROM users
+WHERE id = $1
+`, foundUserID).Scan(&bio, &website)
+		}
+
+		if githubLogin == nil || *githubLogin == "" {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user_not_found"})
+		}
+
+		// Count total contributions (issues + PRs) for verified projects only
+		var contributionsCount int
+		err := h.db.Pool.QueryRow(c.Context(), `
+SELECT 
+  (SELECT COUNT(*) FROM github_issues i
+   INNER JOIN projects p ON i.project_id = p.id
+   WHERE i.author_login = $1 AND p.status = 'verified')
+  +
+  (SELECT COUNT(*) FROM github_pull_requests pr
+   INNER JOIN projects p ON pr.project_id = p.id
+   WHERE pr.author_login = $1 AND p.status = 'verified')
+`, *githubLogin).Scan(&contributionsCount)
+		if err != nil {
+			slog.Error("failed to count contributions", "error", err, "github_login", *githubLogin)
+			contributionsCount = 0
+		}
+
+		// Get most active languages (top 10)
+		langRows, err := h.db.Pool.Query(c.Context(), `
+SELECT 
+  p.language,
+  COUNT(*) as contribution_count
+FROM (
+  SELECT project_id, language FROM github_issues i
+  INNER JOIN projects p ON i.project_id = p.id
+  WHERE i.author_login = $1 AND p.status = 'verified' AND p.language IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT project_id, language FROM github_pull_requests pr
+  INNER JOIN projects p ON pr.project_id = p.id
+  WHERE pr.author_login = $1 AND p.status = 'verified' AND p.language IS NOT NULL
+) contribs
+INNER JOIN projects p ON contribs.project_id = p.id
+WHERE p.language IS NOT NULL
+GROUP BY p.language
+ORDER BY contribution_count DESC
+LIMIT 10
+`, *githubLogin)
+		if err != nil {
+			slog.Error("failed to fetch languages", "error", err, "github_login", *githubLogin)
+		}
+		defer langRows.Close()
+
+		var languages []fiber.Map
+		for langRows.Next() {
+			var lang string
+			var count int
+			if err := langRows.Scan(&lang, &count); err != nil {
+				continue
+			}
+			languages = append(languages, fiber.Map{
+				"language":          lang,
+				"contribution_count": count,
+			})
+		}
+
+		// Get most active ecosystems (top 10)
+		ecoRows, err := h.db.Pool.Query(c.Context(), `
+SELECT 
+  e.name as ecosystem_name,
+  COUNT(*) as contribution_count
+FROM (
+  SELECT DISTINCT p.ecosystem_id
+  FROM github_issues i
+  INNER JOIN projects p ON i.project_id = p.id
+  WHERE i.author_login = $1 AND p.status = 'verified' AND p.ecosystem_id IS NOT NULL
+  
+  UNION
+  
+  SELECT DISTINCT p.ecosystem_id
+  FROM github_pull_requests pr
+  INNER JOIN projects p ON pr.project_id = p.id
+  WHERE pr.author_login = $1 AND p.status = 'verified' AND p.ecosystem_id IS NOT NULL
+) contrib_ecosystems
+INNER JOIN ecosystems e ON contrib_ecosystems.ecosystem_id = e.id
+WHERE e.status = 'active'
+GROUP BY e.name
+ORDER BY contribution_count DESC
+LIMIT 10
+`, *githubLogin)
+		if err != nil {
+			slog.Error("failed to fetch ecosystems", "error", err, "github_login", *githubLogin)
+		}
+		defer ecoRows.Close()
+
+		var ecosystems []fiber.Map
+		for ecoRows.Next() {
+			var ecoName string
+			var count int
+			if err := ecoRows.Scan(&ecoName, &count); err != nil {
+				continue
+			}
+			ecosystems = append(ecosystems, fiber.Map{
+				"ecosystem_name":    ecoName,
+				"contribution_count": count,
+			})
+		}
+
+		// Calculate rank position
+		var rankPosition *int
+		err = h.db.Pool.QueryRow(c.Context(), `
+WITH ranked_contributors AS (
+  SELECT 
+    ac.login,
+    (
+      SELECT COUNT(*) 
+      FROM github_issues i
+      INNER JOIN projects p ON i.project_id = p.id
+      WHERE LOWER(i.author_login) = LOWER(ac.login) AND p.status = 'verified'
+    ) +
+    (
+      SELECT COUNT(*) 
+      FROM github_pull_requests pr
+      INNER JOIN projects p ON pr.project_id = p.id
+      WHERE LOWER(pr.author_login) = LOWER(ac.login) AND p.status = 'verified'
+    ) as contribution_count
+  FROM (
+    SELECT DISTINCT i.author_login as login
+    FROM github_issues i
+    INNER JOIN projects p ON i.project_id = p.id
+    WHERE i.author_login IS NOT NULL AND i.author_login != '' AND p.status = 'verified'
+    UNION
+    SELECT DISTINCT pr.author_login as login
+    FROM github_pull_requests pr
+    INNER JOIN projects p ON pr.project_id = p.id
+    WHERE pr.author_login IS NOT NULL AND pr.author_login != '' AND p.status = 'verified'
+  ) ac
+)
+SELECT 
+  ROW_NUMBER() OVER (ORDER BY contribution_count DESC, login ASC) as rank_position
+FROM ranked_contributors
+WHERE LOWER(login) = LOWER($1)
+`, *githubLogin).Scan(&rankPosition)
+		if err != nil {
+			// User not in ranking, that's okay
+			rankPosition = nil
+		}
+
+		// Calculate rank tier
+		rankTier := RankTierUnranked
+		rankTierName := "Unranked"
+		rankTierColor := "#7a6b5a"
+		if rankPosition != nil {
+			rankTier = GetRankTier(*rankPosition)
+			rankTierName = GetRankTierDisplayName(rankTier)
+			rankTierColor = GetRankTierColor(rankTier)
+		}
+
+		// Get projects contributed to and projects led counts
+		var projectsContributedToCount int
+		err = h.db.Pool.QueryRow(c.Context(), `
+SELECT COUNT(DISTINCT p.id)
+FROM (
+  SELECT project_id FROM github_issues WHERE author_login = $1
+  UNION
+  SELECT project_id FROM github_pull_requests WHERE author_login = $1
+) contribs
+INNER JOIN projects p ON contribs.project_id = p.id
+WHERE p.status = 'verified'
+`, *githubLogin).Scan(&projectsContributedToCount)
+		if err != nil {
+			projectsContributedToCount = 0
+		}
+
+		var projectsLedCount int
+		if userID != nil {
+			err = h.db.Pool.QueryRow(c.Context(), `
+SELECT COUNT(*)
+FROM projects
+WHERE owner_user_id = $1 AND status = 'verified' AND deleted_at IS NULL
+`, *userID).Scan(&projectsLedCount)
+			if err != nil {
+				projectsLedCount = 0
+			}
+		}
+
+		// Get avatar URL
+		var avatarURL *string
+		if userID != nil {
+			_ = h.db.Pool.QueryRow(c.Context(), `
+SELECT COALESCE(u.avatar_url, ga.avatar_url, '')
+FROM users u
+LEFT JOIN github_accounts ga ON u.id = ga.user_id
+WHERE u.id = $1
+`, *userID).Scan(&avatarURL)
+		}
+
+		response := fiber.Map{
+			"login":                      *githubLogin,
+			"user_id":                    func() string {
+				if userID != nil {
+					return userID.String()
+				}
+				return ""
+			}(),
+			"avatar_url":                 func() string {
+				if avatarURL != nil && *avatarURL != "" {
+					return *avatarURL
+				}
+				return ""
+			}(),
+			"contributions_count":         contributionsCount,
+			"projects_contributed_to_count": projectsContributedToCount,
+			"projects_led_count":        projectsLedCount,
+			"languages":                  languages,
+			"ecosystems":                 ecosystems,
+			"rank": fiber.Map{
+				"position":   rankPosition,
+				"tier":       string(rankTier),
+				"tier_name":  rankTierName,
+				"tier_color": rankTierColor,
+			},
+		}
+
+		if bio != nil && *bio != "" {
+			response["bio"] = *bio
+		}
+		if website != nil && *website != "" {
+			response["website"] = *website
+		}
+
+		return c.Status(fiber.StatusOK).JSON(response)
 	}
 }
 

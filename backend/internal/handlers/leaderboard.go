@@ -35,8 +35,8 @@ func (h *LeaderboardHandler) Leaderboard() fiber.Handler {
 		// Query top contributors by contribution count in verified projects
 		// This query:
 		// 1. Gets all unique author_logins from issues and PRs in verified projects
-		// 2. Joins with github_accounts to find which contributors have signed up
-		// 3. Only shows contributors who have signed up (exist in github_accounts)
+		// 2. LEFT JOINs with github_accounts to get user info if they signed up
+		// 3. Shows ALL contributors, whether they signed up or not
 		// 4. Counts their contributions (issues + PRs) in verified projects
 		rows, err := h.db.Pool.Query(c.Context(), `
 WITH all_contributors AS (
@@ -57,29 +57,22 @@ WITH all_contributors AS (
   WHERE pr.author_login IS NOT NULL 
     AND pr.author_login != ''
     AND p.status = 'verified'
-),
-signed_up_contributors AS (
-  -- Only keep contributors who have signed up (exist in github_accounts)
-  SELECT ac.login, ga.avatar_url, ga.user_id, u.id as user_id_uuid
-  FROM all_contributors ac
-  INNER JOIN github_accounts ga ON LOWER(ga.login) = LOWER(ac.login)
-  INNER JOIN users u ON ga.user_id = u.id
 )
 SELECT 
-  suc.login as username,
-  COALESCE(suc.avatar_url, '') as avatar_url,
-  suc.user_id_uuid::text as user_id,
+  ac.login as username,
+  COALESCE(ga.avatar_url, '') as avatar_url,
+  COALESCE(u.id::text, '') as user_id,
   (
     SELECT COUNT(*) 
     FROM github_issues i
     INNER JOIN projects p ON i.project_id = p.id
-    WHERE LOWER(i.author_login) = LOWER(suc.login) AND p.status = 'verified'
+    WHERE LOWER(i.author_login) = LOWER(ac.login) AND p.status = 'verified'
   ) +
   (
     SELECT COUNT(*) 
     FROM github_pull_requests pr
     INNER JOIN projects p ON pr.project_id = p.id
-    WHERE LOWER(pr.author_login) = LOWER(suc.login) AND p.status = 'verified'
+    WHERE LOWER(pr.author_login) = LOWER(ac.login) AND p.status = 'verified'
   ) as contribution_count,
   COALESCE(
     (
@@ -88,32 +81,34 @@ SELECT
         SELECT DISTINCT p.ecosystem_id
         FROM github_issues i
         INNER JOIN projects p ON i.project_id = p.id
-        WHERE LOWER(i.author_login) = LOWER(suc.login) AND p.status = 'verified'
+        WHERE LOWER(i.author_login) = LOWER(ac.login) AND p.status = 'verified'
         UNION
         SELECT DISTINCT p.ecosystem_id
         FROM github_pull_requests pr
         INNER JOIN projects p ON pr.project_id = p.id
-        WHERE LOWER(pr.author_login) = LOWER(suc.login) AND p.status = 'verified'
+        WHERE LOWER(pr.author_login) = LOWER(ac.login) AND p.status = 'verified'
       ) contrib_ecosystems
       INNER JOIN ecosystems e ON contrib_ecosystems.ecosystem_id = e.id
       WHERE e.status = 'active'
     ),
     ARRAY[]::TEXT[]
   ) as ecosystems
-FROM signed_up_contributors suc
+FROM all_contributors ac
+LEFT JOIN github_accounts ga ON LOWER(ga.login) = LOWER(ac.login)
+LEFT JOIN users u ON ga.user_id = u.id
 WHERE (
   SELECT COUNT(*) 
   FROM github_issues i
   INNER JOIN projects p ON i.project_id = p.id
-  WHERE LOWER(i.author_login) = LOWER(suc.login) AND p.status = 'verified'
+  WHERE LOWER(i.author_login) = LOWER(ac.login) AND p.status = 'verified'
 ) +
 (
   SELECT COUNT(*) 
   FROM github_pull_requests pr
   INNER JOIN projects p ON pr.project_id = p.id
-  WHERE LOWER(pr.author_login) = LOWER(suc.login) AND p.status = 'verified'
+  WHERE LOWER(pr.author_login) = LOWER(ac.login) AND p.status = 'verified'
 ) > 0
-ORDER BY contribution_count DESC, suc.login ASC
+ORDER BY contribution_count DESC, ac.login ASC
 LIMIT $1
 `, limit)
 		if err != nil {

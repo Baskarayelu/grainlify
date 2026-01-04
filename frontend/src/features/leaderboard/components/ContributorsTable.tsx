@@ -7,6 +7,7 @@ interface ContributorsTableProps {
   data: LeaderData[];
   activeFilter: FilterType;
   isLoaded: boolean;
+  onUserClick?: (username: string, userId?: string) => void;
 }
 
 const getTrendIcon = (trend: 'up' | 'down' | 'same') => {
@@ -15,8 +16,14 @@ const getTrendIcon = (trend: 'up' | 'down' | 'same') => {
   return <Minus className="w-4 h-4 text-[#7a6b5a]" />;
 };
 
-export function ContributorsTable({ data, activeFilter, isLoaded }: ContributorsTableProps) {
+export function ContributorsTable({ data, activeFilter, isLoaded, onUserClick }: ContributorsTableProps) {
   const { theme } = useTheme();
+
+  const handleRowClick = (leader: LeaderData) => {
+    if (onUserClick) {
+      onUserClick(leader.username, leader.user_id);
+    }
+  };
 
   return (
     <div className={`backdrop-blur-[40px] bg-white/[0.12] rounded-[24px] border border-white/20 shadow-[0_8px_32px_rgba(0,0,0,0.08)] overflow-hidden transition-all duration-700 delay-1000 ${
@@ -47,6 +54,7 @@ export function ContributorsTable({ data, activeFilter, isLoaded }: Contributors
         {data.map((leader, index) => (
           <div
             key={leader.rank}
+            onClick={() => handleRowClick(leader)}
             className="grid grid-cols-12 gap-4 px-8 py-5 hover:bg-white/[0.08] transition-all duration-300 cursor-pointer group"
             style={{
               animation: isLoaded ? `slideInLeft 0.5s ease-out ${1.1 + index * 0.1}s both` : 'none',

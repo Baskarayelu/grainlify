@@ -7,6 +7,7 @@ export interface LeaderData {
   rank_tier_name?: string;
   username: string;
   avatar: string;
+  user_id?: string;
   score: number;
   trend: 'up' | 'down' | 'same';
   trendValue: number;

@@ -38,6 +38,7 @@ export function LeaderboardPage() {
             rank_tier_name: item.rank_tier_name,
             username: item.username,
             avatar: item.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(item.username)}&background=c9983a&color=fff&size=128`,
+            user_id: item.user_id || '',
             score: item.score,
             trend: item.trend,
             trendValue: item.trendValue,
@@ -158,6 +159,11 @@ export function LeaderboardPage() {
               data={leaderboardData}
               activeFilter={activeFilter}
               isLoaded={isLoaded}
+              onUserClick={(username, userId) => {
+                // Navigate to profile page with user identifier
+                const identifier = userId || username;
+                window.location.href = `/dashboard?page=profile&user=${identifier}`;
+              }}
             />
           )}
         </>

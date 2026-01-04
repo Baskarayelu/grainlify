@@ -124,6 +124,7 @@ func New(cfg config.Config, deps Deps) *fiber.App {
 	// User profile endpoints
 	userProfile := handlers.NewUserProfileHandler(cfg, deps.DB)
 	app.Get("/profile", auth.RequireAuth(cfg.JWTSecret), userProfile.Profile())
+	app.Get("/profile/public", userProfile.PublicProfile()) // Public profile endpoint (no auth required)
 	app.Get("/profile/calendar", auth.RequireAuth(cfg.JWTSecret), userProfile.ContributionCalendar())
 	app.Get("/profile/activity", auth.RequireAuth(cfg.JWTSecret), userProfile.ContributionActivity())
 	app.Put("/profile/update", auth.RequireAuth(cfg.JWTSecret), userProfile.UpdateProfile())

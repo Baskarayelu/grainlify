@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Search, ChevronDown, Award, Briefcase, GitPullRequest, FolderGit2, Trophy, Github, Code, Globe, Sparkles, TrendingUp, Star, Users, GitFork, DollarSign, GitMerge, Calendar, ChevronRight, Filter, Circle, Eye, Crown } from 'lucide-react';
+import { Search, ChevronDown, Award, Briefcase, GitPullRequest, FolderGit2, Trophy, Github, Code, Globe, Sparkles, TrendingUp, Star, Users, GitFork, DollarSign, GitMerge, Calendar, ChevronRight, Filter, Circle, Eye, Crown, Link, ArrowLeft } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { useTheme } from '../../../shared/contexts/ThemeContext';
 import { useAuth } from '../../../shared/contexts/AuthContext';
-import { getUserProfile, getMyProjects, getProfileCalendar, getProfileActivity } from '../../../shared/api/client';
+import { getUserProfile, getMyProjects, getProfileCalendar, getProfileActivity, getPublicProfile } from '../../../shared/api/client';
 import { SkeletonLoader } from '../../../shared/components/SkeletonLoader';
 import { LanguageIcon } from '../../../shared/components/LanguageIcon';
 
@@ -14,6 +14,8 @@ interface ProfileData {
   projects_contributed_to_count?: number;
   projects_led_count?: number;
   rewards_count?: number;
+  bio?: string;
+  website?: string;
   rank: {
     position: number | null;
     tier: string;
@@ -34,10 +36,17 @@ interface Project {
   contributors_count?: number;
 }
 
-export function ProfilePage() {
+interface ProfilePageProps {
+  viewingUserId?: string | null;
+  viewingUserLogin?: string | null;
+  onBack?: () => void;
+}
+
+export function ProfilePage({ viewingUserId, viewingUserLogin, onBack }: ProfilePageProps) {
   const { theme } = useTheme();
   const { user, userRole } = useAuth();
   const [profileData, setProfileData] = useState<ProfileData | null>(null);
+  const [viewingUser, setViewingUser] = useState<{ login: string; avatar_url?: string } | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [contributionCalendar, setContributionCalendar] = useState<Array<{ date: string; count: number; level: number }>>([]);
   const [contributionActivity, setContributionActivity] = useState<Array<{
@@ -66,7 +75,15 @@ export function ProfilePage() {
     const fetchProfile = async () => {
       setIsLoadingProfile(true);
       try {
-        const data = await getUserProfile();
+        let data;
+        if (viewingUserId || viewingUserLogin) {
+          // Fetch public profile for another user
+          data = await getPublicProfile(viewingUserId || undefined, viewingUserLogin || undefined);
+          setViewingUser({ login: data.login, avatar_url: data.avatar_url });
+        } else {
+          // Fetch own profile
+          data = await getUserProfile();
+        }
         setProfileData(data);
         setIsLoadingProfile(false);
       } catch (error) {
@@ -76,7 +93,7 @@ export function ProfilePage() {
       }
     };
     fetchProfile();
-  }, []);
+  }, [viewingUserId, viewingUserLogin]);
 
   // Fetch user's projects
   useEffect(() => {
@@ -236,6 +253,21 @@ export function ProfilePage() {
 
   return (
     <div className="space-y-6">
+      {/* Back Button (only when viewing another user's profile) */}
+      {onBack && (viewingUserId || viewingUserLogin) && (
+        <button
+          onClick={onBack}
+          className={`flex items-center gap-2 px-4 py-2 rounded-[12px] backdrop-blur-[30px] border font-medium text-[14px] hover:bg-white/[0.2] transition-all ${
+            theme === 'dark'
+              ? 'bg-[#3d342c]/[0.4] border-white/15 text-[#d4c5b0]'
+              : 'bg-white/[0.15] border-white/25 text-[#2d2820]'
+          }`}
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Leaderboard
+        </button>
+      )}
+      
       {/* Profile Header */}
       <div className="backdrop-blur-[40px] bg-gradient-to-br from-white/[0.18] to-white/[0.10] rounded-[32px] border-2 border-white/30 shadow-[0_20px_60px_rgba(0,0,0,0.15),0_0_80px_rgba(201,152,58,0.08)] p-12 relative overflow-hidden group">
         {/* Ambient Background Glow - Enhanced */}
@@ -257,10 +289,10 @@ export function ProfilePage() {
                 <>
                   <div className="absolute inset-0 bg-gradient-to-br from-[#c9983a]/40 to-[#d4af37]/25 rounded-full blur-2xl group-hover/avatar:blur-3xl transition-all duration-700 animate-pulse" />
                   <div className="absolute inset-0 bg-gradient-to-br from-[#ffd700]/20 to-[#c9983a]/10 rounded-full blur-xl" />
-                  {user?.github.avatar_url ? (
+                  {(viewingUser?.avatar_url || user?.github.avatar_url) ? (
                     <img 
-                      src={user.github.avatar_url} 
-                      alt={user.github.login}
+                      src={viewingUser?.avatar_url || user?.github.avatar_url} 
+                      alt={viewingUser?.login || user?.github.login}
                       className="relative w-32 h-32 rounded-full border-[6px] border-white/40 shadow-[0_12px_40px_rgba(0,0,0,0.25),inset_0_2px_8px_rgba(255,255,255,0.3)] flex-shrink-0 group-hover/avatar:scale-105 transition-transform duration-500 object-cover"
                     />
                   ) : (
@@ -289,7 +321,7 @@ export function ProfilePage() {
               )}
               
               {/* Role and Rank Badges */}
-              <div className="flex items-center gap-3 mb-7 flex-wrap">
+              <div className="flex items-center gap-3 mb-4 flex-wrap">
                 {isLoadingProfile ? (
                   <SkeletonLoader variant="default" width="200px" height="40px" className="rounded-[14px]" />
                 ) : (
@@ -311,6 +343,34 @@ export function ProfilePage() {
                   </div>
                 )}
               </div>
+
+              {/* Bio and Website */}
+              {!isLoadingProfile && (profileData?.bio || profileData?.website) && (
+                <div className="mb-6 space-y-3">
+                  {profileData.bio && (
+                    <p className={`text-[15px] leading-relaxed transition-colors ${
+                      theme === 'dark' ? 'text-[#d4d4d4]' : 'text-[#7a6b5a]'
+                    }`}>
+                      {profileData.bio}
+                    </p>
+                  )}
+                  {profileData.website && (
+                    <div className="flex items-center gap-2">
+                      <Link className="w-4 h-4 text-[#c9983a]" />
+                      <a
+                        href={profileData.website.startsWith('http') ? profileData.website : `https://${profileData.website}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`text-[14px] font-medium hover:text-[#c9983a] transition-colors underline decoration-[#c9983a]/30 hover:decoration-[#c9983a]/60 ${
+                          theme === 'dark' ? 'text-[#d4c5b0]' : 'text-[#7a6b5a]'
+                        }`}
+                      >
+                        {profileData.website.replace(/^https?:\/\//, '').replace(/^www\./, '')}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Stats Grid - Inline Premium Style */}
               <div className="space-y-4 mb-6">
