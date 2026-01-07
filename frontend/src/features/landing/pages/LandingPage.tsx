@@ -9,7 +9,6 @@ import { useAuth } from '../../../shared/contexts/AuthContext';
 
 export function LandingPage() {
   const { theme } = useTheme();
-  const { display } = useLandingStats();
   const navigate = useNavigate();
   const { login } = useAuth();
   
@@ -206,6 +205,7 @@ function HowItWorks() {
 
 function WhyChooseUs() {
   const { theme } = useTheme();
+  const { display } = useLandingStats();
   
   const benefits = [
     'Verified and vetted projects from trusted organizations',
