@@ -1,4 +1,4 @@
-import React, { ReactNode } from 'react';
+import React, { ReactNode, useState, useRef, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -248,36 +248,95 @@ export function ModalSelect({
   onChange,
   options,
   required = false,
-  className = ''
+  className = '',
 }: ModalSelectProps) {
   const { theme } = useTheme();
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Find current label to display on the button
+  const selectedOption = options.find((opt) => opt.value === value);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   return (
-    <div className={className}>
+    <div className={`flex flex-col gap-1 relative ${className}`} ref={containerRef}>
       {label && (
-        <label className={`block text-[13px] font-medium mb-2 transition-colors ${
-          theme === 'dark' ? 'text-[#d4d4d4]' : 'text-[#7a6b5a]'
-        }`}>
-          {label}
-          {required && <span className="text-[#c9983a] ml-1">*</span>}
+        <label
+          className={`block text-[13px] font-medium mb-2 transition-colors ${
+            theme === 'dark' ? 'text-[#d4d4d4]' : 'text-[#7a6b5a]'
+          }`}
+        >
+          {label} {required && <span className="text-[#c9983a] ml-1">*</span>}
         </label>
       )}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required={required}
-        className={`w-full px-4 py-3 rounded-[14px] backdrop-blur-[30px] border focus:outline-none transition-all text-[14px] ${
+
+      {/* Custom Trigger Button - Matches your existing style perfectly */}
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full flex items-center justify-between px-4 py-3 rounded-[14px] backdrop-blur-[30px] border transition-all text-[14px] outline-none ${
           theme === 'dark'
-            ? 'bg-white/[0.08] border-white/15 text-[#f5f5f5] focus:bg-white/[0.12] focus:border-[#c9983a]/30'
-            : 'bg-white/[0.15] border-white/25 text-[#2d2820] focus:bg-white/[0.2] focus:border-[#c9983a]/30'
-        }`}
+            ? 'bg-white/[0.08] border-white/15 text-[#f5f5f5] focus:border-[#c9983a]/30'
+            : 'bg-white/[0.15] border-white/25 text-[#2d2820] focus:border-[#c9983a]/30'
+        } ${isOpen ? 'border-[#c9983a]' : ''}`}
       >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        <span>{selectedOption ? selectedOption.label : 'Select...'}</span>
+        <svg
+          className={`w-4 h-4 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {/* Custom Dropdown Menu - This is the fix for the theme issue */}
+      {isOpen && (
+        <div
+          className={`absolute z-[100] w-full mt-[80px] max-h-60 overflow-auto rounded-[14px] border shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 ${
+            theme === 'dark' 
+              ? 'bg-[#1a1a1a] border-white/10' 
+              : 'bg-white border-gray-200 shadow-xl'
+          }`}
+        >
+          <ul className="py-2">
+            {options.map((option) => (
+              <li
+                key={option.value}
+                onClick={() => {
+                  onChange(option.value);
+                  setIsOpen(false);
+                }}
+                className={`px-4 py-2.5 cursor-pointer text-[14px] transition-colors flex items-center justify-between ${
+                  theme === 'dark'
+                    ? value === option.value
+                      ? 'bg-[#c9983a]/20 text-[#c9983a]'
+                      : 'text-gray-300 hover:bg-white/5'
+                    : value === option.value
+                      ? 'bg-[#c9983a]/10 text-[#c9983a]'
+                      : 'text-[#2d2820] hover:bg-gray-100'
+                }`}
+              >
+                {option.label}
+                {value === option.value && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#c9983a]" />
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
