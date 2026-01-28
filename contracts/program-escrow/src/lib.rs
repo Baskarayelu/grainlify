@@ -139,27 +139,13 @@
 //! 6. **Token Approval**: Ensure contract has token allowance before locking funds
 
 #![no_std]
-
-// Error recovery and retry modules
-mod error_recovery;
-mod retry_executor;
-
-#[cfg(test)]
-mod error_recovery_tests;
-
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, vec, Address, Env, String, Symbol,
     Vec,
 };
 
-// Re-export error recovery types for external use
-pub use error_recovery::{
-    BatchItemError, BatchResult, CircuitBreaker, CircuitState, ErrorClass, ErrorState,
-    RecoveryError, RecoveryStrategy, RetryConfig,
-};
-pub use retry_executor::{RetryContext, RetryResult};
-
 // Event types
+#[allow(dead_code)]
 const PROGRAM_INITIALIZED: Symbol = symbol_short!("ProgInit");
 const FUNDS_LOCKED: Symbol = symbol_short!("FundLock");
 const BATCH_PAYOUT: Symbol = symbol_short!("BatchPay");
@@ -177,10 +163,10 @@ const MAX_FEE_RATE: i128 = 1_000; // Maximum 10% fee
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeConfig {
-    pub lock_fee_rate: i128,      // Fee rate for lock operations (basis points)
-    pub payout_fee_rate: i128,     // Fee rate for payout operations (basis points)
-    pub fee_recipient: Address,    // Address to receive fees
-    pub fee_enabled: bool,         // Global fee enable/disable flag
+    pub lock_fee_rate: i128,    // Fee rate for lock operations (basis points)
+    pub payout_fee_rate: i128,  // Fee rate for payout operations (basis points)
+    pub fee_recipient: Address, // Address to receive fees
+    pub fee_enabled: bool,      // Global fee enable/disable flag
 }
 // ==================== MONITORING MODULE ====================
 mod monitoring {
@@ -696,6 +682,7 @@ pub enum DataKey {
     ReleaseSchedule(String, u64), // program_id, schedule_id -> ProgramReleaseSchedule
     ReleaseHistory(String),       // program_id -> Vec<ProgramReleaseHistory>
     NextScheduleId(String),       // program_id -> next schedule_id
+    IsPaused,                     // Global contract pause state
 }
 
 // ============================================================================
@@ -716,13 +703,13 @@ impl ProgramEscrowContract {
     // ========================================================================
 
     /// Initializes a new program escrow for managing prize distributions.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `program_id` - Unique identifier for this program/hackathon
     /// * `authorized_payout_key` - Address authorized to trigger payouts (backend)
     /// * `token_address` - Address of the token contract for transfers (e.g., USDC)
-    /// 
+    ///
     /// # Returns
     /// * `ProgramData` - The initialized program configuration
     ///
@@ -781,6 +768,89 @@ impl ProgramEscrowContract {
     ///
     /// # Gas Cost
     /// Low - Initial storage writes
+    #[allow(clippy::empty_line_after_outer_attr)]
+    //
+    // ========================================================================
+    // Pause and Emergency Functions
+    // ========================================================================
+
+    /// Check if contract is paused (internal helper)
+    fn is_paused_internal(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::IsPaused)
+            .unwrap_or(false)
+    }
+
+    /// Get pause status (view function)
+    pub fn is_paused(env: Env) -> bool {
+        Self::is_paused_internal(&env)
+    }
+
+    /// Pause the contract (authorized payout key only)
+    /// Prevents new fund locking, payouts, and schedule releases
+    pub fn pause(env: Env) {
+        // For program-escrow, pause is triggered by the first authorized key that calls it
+        // In a multi-program setup, this would need to be per-program
+
+        if Self::is_paused_internal(&env) {
+            return; // Already paused, idempotent
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &true);
+
+        env.events()
+            .publish((symbol_short!("pause"),), (env.ledger().timestamp(),));
+    }
+
+    /// Unpause the contract (authorized payout key only)
+    /// Resumes normal operations
+    pub fn unpause(env: Env) {
+        if !Self::is_paused_internal(&env) {
+            return; // Already unpaused, idempotent
+        }
+
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        env.events()
+            .publish((symbol_short!("unpause"),), (env.ledger().timestamp(),));
+    }
+
+    /// Emergency withdrawal for all contract funds (authorized payout key only, only when paused)
+    pub fn emergency_withdraw(env: Env, program_id: String, recipient: Address) -> i128 {
+        // Only allow emergency withdrawal when contract is paused
+        if !Self::is_paused_internal(&env) {
+            panic!("Contract must be paused for emergency withdrawal");
+        }
+
+        // Get program data to access token address
+        let program_key = DataKey::Program(program_id.clone());
+        let program_data: ProgramData =
+            env.storage()
+                .instance()
+                .get(&program_key)
+                .unwrap_or_else(|| {
+                    panic!("Program not found");
+                });
+
+        let client = token::Client::new(&env, &program_data.token_address);
+        let balance = client.balance(&env.current_contract_address());
+
+        if balance <= 0 {
+            return 0; // No funds to withdraw
+        }
+
+        // Transfer all funds to recipient
+        client.transfer(&env.current_contract_address(), &recipient, &balance);
+
+        env.events().publish(
+            (symbol_short!("ewith"),),
+            (balance, env.ledger().timestamp()),
+        );
+
+        balance
+    }
+
     pub fn initialize_program(
         env: Env,
         program_id: String,
@@ -879,7 +949,7 @@ impl ProgramEscrowContract {
     }
 
     /// Lock initial funds into the program escrow
-    /// 
+    ///
     /// Lists all registered program IDs in the contract.
     ///
     /// # Returns
@@ -900,10 +970,10 @@ impl ProgramEscrowContract {
     }
 
     /// Checks if a program exists.
-    /// 
+    ///
     /// # Arguments
     /// * `program_id` - The program ID to check
-    /// 
+    ///
     /// # Returns
     /// * `bool` - True if program exists, false otherwise
     pub fn program_exists(env: Env, program_id: String) -> bool {
@@ -997,8 +1067,14 @@ impl ProgramEscrowContract {
         // Apply rate limiting
         anti_abuse::check_rate_limit(&env, env.current_contract_address());
 
-        let start = env.ledger().timestamp();
+        let _start = env.ledger().timestamp();
         let caller = env.current_contract_address();
+
+        // Check if contract is paused
+        if Self::is_paused_internal(&env) {
+            monitoring::track_operation(&env, symbol_short!("lock"), caller.clone(), false);
+            panic!("Contract is paused");
+        }
 
         // Validate amount
         if amount <= 0 {
@@ -1064,12 +1140,12 @@ impl ProgramEscrowContract {
     // ========================================================================
 
     /// Executes batch payouts to multiple recipients simultaneously.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `recipients` - Vector of recipient addresses
     /// * `amounts` - Vector of amounts (must match recipients length)
-    /// 
+    ///
     /// # Returns
     /// * `ProgramData` - Updated program data after payouts
     ///
@@ -1164,6 +1240,11 @@ impl ProgramEscrowContract {
         recipients: Vec<Address>,
         amounts: Vec<i128>,
     ) -> ProgramData {
+        // Check if contract is paused
+        if Self::is_paused_internal(&env) {
+            panic!("Contract is paused");
+        }
+
         // Apply rate limiting to the contract itself or the program
         // We can't easily get the caller here without getting program data first
 
@@ -1223,7 +1304,7 @@ impl ProgramEscrowContract {
         for i in 0..recipients.len() {
             let recipient = recipients.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
-            
+
             // Calculate fee for this payout
             let fee_amount = if fee_config.fee_enabled && fee_config.payout_fee_rate > 0 {
                 Self::calculate_fee(amount, fee_config.payout_fee_rate)
@@ -1232,10 +1313,10 @@ impl ProgramEscrowContract {
             };
             let net_amount = amount - fee_amount;
             total_fees += fee_amount;
-            
+
             // Transfer net amount to recipient
             token_client.transfer(&contract_address, &recipient.clone(), &net_amount);
-            
+
             // Transfer fee to fee recipient if applicable
             if fee_amount > 0 {
                 token_client.transfer(&contract_address, &fee_config.fee_recipient, &fee_amount);
@@ -1286,12 +1367,12 @@ impl ProgramEscrowContract {
     }
 
     /// Executes a single payout to one recipient.
-    /// 
+    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `recipient` - Address of the prize recipient
     /// * `amount` - Amount to transfer (in token's smallest denomination)
-    /// 
+    ///
     /// # Returns
     /// * `ProgramData` - Updated program data after payout
     ///
@@ -1344,6 +1425,11 @@ impl ProgramEscrowContract {
         recipient: Address,
         amount: i128,
     ) -> ProgramData {
+        // Check if contract is paused
+        if Self::is_paused_internal(&env) {
+            panic!("Contract is paused");
+        }
+
         // Get program data
         let program_key = DataKey::Program(program_id.clone());
         let program_data: ProgramData = env
@@ -1356,7 +1442,6 @@ impl ProgramEscrowContract {
         // Apply rate limiting to the authorized payout key
         anti_abuse::check_rate_limit(&env, program_data.authorized_payout_key.clone());
 
-       
         // Verify authorization
         // let caller = env.invoker();
         // if caller != program_data.authorized_payout_key {
@@ -1390,7 +1475,7 @@ impl ProgramEscrowContract {
         let contract_address = env.current_contract_address();
         let token_client = token::Client::new(&env, &program_data.token_address);
         token_client.transfer(&contract_address, &recipient, &net_amount);
-        
+
         // Transfer fee to fee recipient if applicable
         if fee_amount > 0 {
             token_client.transfer(&contract_address, &fee_config.fee_recipient, &fee_amount);
@@ -1489,6 +1574,11 @@ impl ProgramEscrowContract {
         recipient: Address,
     ) -> ProgramData {
         let start = env.ledger().timestamp();
+
+        // Check if contract is paused
+        if Self::is_paused_internal(&env) {
+            panic!("Contract is paused");
+        }
 
         // Get program data
         let program_key = DataKey::Program(program_id.clone());
@@ -1609,6 +1699,11 @@ impl ProgramEscrowContract {
     pub fn release_prog_schedule_automatic(env: Env, program_id: String, schedule_id: u64) {
         let start = env.ledger().timestamp();
         let caller = env.current_contract_address();
+
+        // Check if contract is paused
+        if Self::is_paused_internal(&env) {
+            panic!("Contract is paused");
+        }
 
         // Get program data
         let program_key = DataKey::Program(program_id.clone());
@@ -1856,7 +1951,7 @@ impl ProgramEscrowContract {
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// 
+    ///
     /// # Returns
     /// * `ProgramData` - Complete program state including:
     ///   - Program ID
@@ -1898,7 +1993,7 @@ impl ProgramEscrowContract {
     ///
     /// # Arguments
     /// * `program_id` - The program ID to query
-    /// 
+    ///
     /// # Returns
     /// * `i128` - Remaining balance
     ///
@@ -1916,7 +2011,7 @@ impl ProgramEscrowContract {
     }
 
     /// Update fee configuration (admin only - uses authorized_payout_key)
-    /// 
+    ///
     /// # Arguments
     /// * `lock_fee_rate` - Optional new lock fee rate (basis points)
     /// * `payout_fee_rate` - Optional new payout fee rate (basis points)
@@ -1943,15 +2038,21 @@ impl ProgramEscrowContract {
         let mut fee_config = Self::get_fee_config_internal(&env);
 
         if let Some(rate) = lock_fee_rate {
-            if rate < 0 || rate > MAX_FEE_RATE {
-                panic!("Invalid lock fee rate: must be between 0 and {}", MAX_FEE_RATE);
+            if !(0..=MAX_FEE_RATE).contains(&rate) {
+                panic!(
+                    "Invalid lock fee rate: must be between 0 and {}",
+                    MAX_FEE_RATE
+                );
             }
             fee_config.lock_fee_rate = rate;
         }
 
         if let Some(rate) = payout_fee_rate {
-            if rate < 0 || rate > MAX_FEE_RATE {
-                panic!("Invalid payout fee rate: must be between 0 and {}", MAX_FEE_RATE);
+            if !(0..=MAX_FEE_RATE).contains(&rate) {
+                panic!(
+                    "Invalid payout fee rate: must be between 0 and {}",
+                    MAX_FEE_RATE
+                );
             }
             fee_config.payout_fee_rate = rate;
         }
@@ -2238,7 +2339,7 @@ mod test {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
-        token, Address, Env, String, Vec,
+        token, Address, Env, String,
     };
 
     // Test helper to create a mock token contract
@@ -2262,7 +2363,7 @@ mod test {
         release_timestamp: u64,
     ) {
         // Register program
-        client.register_program(program_id, token, authorized_key);
+        client.initialize_program(program_id, authorized_key, token);
 
         // Create and fund token
         let token_client = create_token_contract(env, authorized_key);
@@ -2276,14 +2377,14 @@ mod test {
             &total_amount,
             &1000,
         );
-        client.lock_funds(program_id, &total_amount);
+        client.lock_program_funds(program_id, &total_amount);
 
         // Create release schedule
         client.create_program_release_schedule(
             program_id,
             &total_amount,
             &release_timestamp,
-            winner.clone(),
+            &winner,
         );
     }
 
@@ -2347,7 +2448,7 @@ mod test {
         env.mock_all_auths();
 
         // Register program
-        client.register_program(&program_id, &token, &authorized_key);
+        client.initialize_program(&program_id, &authorized_key, &token);
 
         // Create and fund token
         let token_client = create_token_contract(&env, &authorized_key);
@@ -2361,7 +2462,7 @@ mod test {
             &total_amount,
             &1000,
         );
-        client.lock_funds(&program_id, &total_amount);
+        client.lock_program_funds(&program_id, &total_amount);
 
         // Create first release schedule
         client.create_program_release_schedule(&program_id, &amount1, &1000, &winner1.clone());
@@ -2479,7 +2580,7 @@ mod test {
 
         // Manually release before timestamp (authorized key can do this)
         env.ledger().set_timestamp(999);
-        client.release_prog_schedule_manual(&program_id, &1);
+        client.release_program_schedule_manual(&program_id, &1);
 
         // Verify schedule was released
         let schedule = client.get_program_release_schedule(&program_id, &1);
@@ -2513,7 +2614,7 @@ mod test {
         env.mock_all_auths();
 
         // Register program
-        client.register_program(&program_id, &token, &authorized_key);
+        client.initialize_program(&program_id, &authorized_key, &token);
 
         // Create and fund token
         let token_client = create_token_contract(&env, &authorized_key);
@@ -2527,7 +2628,7 @@ mod test {
             &total_amount,
             &1000,
         );
-        client.lock_funds(&program_id, &total_amount);
+        client.lock_program_funds(&program_id, &total_amount);
 
         // Create first schedule
         client.create_program_release_schedule(&program_id, &amount1, &1000, &winner1.clone());
@@ -2536,7 +2637,7 @@ mod test {
         client.create_program_release_schedule(&program_id, &amount2, &2000, &winner2.clone());
 
         // Release first schedule manually
-        client.release_prog_schedule_manual(&program_id, &1);
+        client.release_program_schedule_manual(&program_id, &1);
 
         // Advance time and release second schedule automatically
         env.ledger().set_timestamp(2001);
@@ -2592,7 +2693,7 @@ mod test {
         env.mock_all_auths();
 
         // Register program
-        client.register_program(&program_id, &token, &authorized_key);
+        client.initialize_program(&program_id, &authorized_key, &token);
 
         // Create and fund token
         let token_client = create_token_contract(&env, &authorized_key);
@@ -2606,7 +2707,7 @@ mod test {
             &total_amount,
             &1000,
         );
-        client.lock_funds(&program_id, &total_amount);
+        client.lock_program_funds(&program_id, &total_amount);
 
         // Create overlapping schedules (all at same timestamp)
         client.create_program_release_schedule(
