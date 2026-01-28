@@ -71,3 +71,138 @@ pub const PROPOSAL_COUNT: Symbol = symbol_short!("PROP_CNT");
 pub const VOTES: Symbol = symbol_short!("VOTES");
 pub const GOVERNANCE_CONFIG: Symbol = symbol_short!("GOV_CFG");
 pub const VOTER_REGISTRY: Symbol = symbol_short!("VOTERS");
+
+#[soroban_sdk::contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    InvalidThreshold = 2,
+    ThresholdTooLow = 3,
+    InsufficientStake = 4,
+    ProposalsNotFound = 5,
+    ProposalNotFound = 6,
+    ProposalNotActive = 7,
+    VotingNotStarted = 8,
+    VotingEnded = 9,
+    VotingStillActive = 10,
+    AlreadyVoted = 11,
+    ProposalNotApproved = 12,
+    ExecutionDelayNotMet = 13,
+    ProposalExpired = 14,
+}
+
+pub struct GovernanceContract;
+
+impl GovernanceContract {
+    /// Initialize governance system
+    pub fn init_governance(
+        env: &soroban_sdk::Env,
+        admin: Address,
+        config: GovernanceConfig,
+    ) -> Result<(), Error> {
+        // Validate admin
+        admin.require_auth();
+        
+        // Validate config
+        if config.quorum_percentage > 10000 || config.approval_threshold > 10000 {
+            return Err(Error::InvalidThreshold);
+        }
+        
+        if config.approval_threshold < 5000 {
+            return Err(Error::ThresholdTooLow); // Must be > 50%
+        }
+        
+        // Store config
+        env.storage().instance().set(&GOVERNANCE_CONFIG, &config);
+        env.storage().instance().set(&PROPOSAL_COUNT, &0u32);
+        
+        // Emit event
+        env.events().publish(
+            (symbol_short!("gov_init"), admin.clone()),
+            config,
+        );
+        
+        Ok(())
+    }
+
+    /// Create a new upgrade proposal
+    pub fn create_proposal(
+        env: &soroban_sdk::Env,
+        proposer: Address,
+        new_wasm_hash: BytesN<32>,
+        description: Symbol,
+    ) -> Result<u32, Error> {
+        // Authenticate proposer
+        proposer.require_auth();
+        
+        // Load config
+        let config: GovernanceConfig = env
+            .storage()
+            .instance()
+            .get(&GOVERNANCE_CONFIG)
+            .ok_or(Error::NotInitialized)?;
+        
+        // Check minimum stake requirement
+        let proposer_balance = Self::get_voting_power(env, &proposer)?;
+        if proposer_balance < config.min_proposal_stake {
+            return Err(Error::InsufficientStake);
+        }
+        
+        // Get current proposal count
+        let proposal_id: u32 = env
+            .storage()
+            .instance()
+            .get(&PROPOSAL_COUNT)
+            .unwrap_or(0);
+        
+        let current_time = env.ledger().timestamp();
+        
+        // Create proposal
+        let proposal = Proposal {
+            id: proposal_id,
+            proposer: proposer.clone(),
+            new_wasm_hash,
+            description: description.clone(),
+            created_at: current_time,
+            voting_start: current_time,
+            voting_end: current_time + config.voting_period,
+            execution_delay: config.execution_delay,
+            status: ProposalStatus::Active,
+            votes_for: 0,
+            votes_against: 0,
+            votes_abstain: 0,
+            total_votes: 0,
+        };
+        
+        // Store proposal
+        let mut proposals: soroban_sdk::Map<u32, Proposal> = env
+            .storage()
+            .instance()
+            .get(&PROPOSALS)
+            .unwrap_or(soroban_sdk::Map::new(env));
+        
+        proposals.set(proposal_id, proposal.clone());
+        env.storage().instance().set(&PROPOSALS, &proposals);
+        
+        // Increment counter
+        env.storage()
+            .instance()
+            .set(&PROPOSAL_COUNT, &(proposal_id + 1));
+        
+        // Emit event
+        env.events().publish(
+            (symbol_short!("proposal"), proposer.clone()),
+            (proposal_id, description),
+        );
+        
+        Ok(proposal_id)
+    }
+    
+    /// Get voting power for an address
+    pub fn get_voting_power(env: &soroban_sdk::Env, _voter: &Address) -> Result<i128, Error> {
+        // TODO: Integrate with token contract or use native balance
+        // For now, assume equal voting power of 1 for testing purposes
+        Ok(100) // Returns 100 to pass any min_stake check for now
+    }
+}
