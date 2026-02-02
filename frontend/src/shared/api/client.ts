@@ -717,6 +717,7 @@ export const getMyProjects = () =>
       owner_avatar_url?: string;
       created_at: string;
       updated_at: string;
+      needs_metadata?: boolean;
     }>
   >("/projects/mine", { requiresAuth: true });
 

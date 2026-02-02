@@ -167,7 +167,8 @@ SELECT
   p.language,
   p.tags,
   p.category,
-  p.description
+  p.description,
+  p.needs_metadata
 FROM projects p
 LEFT JOIN ecosystems e ON p.ecosystem_id = e.id
 WHERE p.owner_user_id = $1
@@ -208,8 +209,9 @@ ORDER BY p.created_at DESC
 			var tagsJSON []byte
 			var category *string
 			var description *string
+			var needsMetadata bool
 
-			if err := rows.Scan(&id, &fullName, &status, &repoID, &verifiedAt, &verErr, &webhookID, &webhookURL, &webhookCreatedAt, &createdAt, &updatedAt, &ecosystemName, &language, &tagsJSON, &category, &description); err != nil {
+			if err := rows.Scan(&id, &fullName, &status, &repoID, &verifiedAt, &verErr, &webhookID, &webhookURL, &webhookCreatedAt, &createdAt, &updatedAt, &ecosystemName, &language, &tagsJSON, &category, &description, &needsMetadata); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "projects_list_failed"})
 			}
 
@@ -263,6 +265,7 @@ WHERE id = $1
 				"tags":               tags,
 				"category":           category,
 				"description":        description,
+				"needs_metadata":     needsMetadata,
 			}
 
 			// Add owner avatar if available

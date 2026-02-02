@@ -1,8 +1,36 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChevronRight, ExternalLink, Users, FolderGit2, AlertCircle, GitPullRequest } from 'lucide-react';
 import { useTheme } from '../../../shared/contexts/ThemeContext';
 import { ProjectCard, Project } from '../components/ProjectCard';
 import { SearchWithFilter } from '../components/SearchWithFilter';
+import { getPublicProjects } from '../../../shared/api/client';
+import { SkeletonLoader } from '../../../shared/components/SkeletonLoader';
+
+const formatNumber = (num: number): string => {
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return num.toString();
+};
+
+const getProjectIcon = (githubFullName: string): string => {
+  const [owner] = githubFullName.split('/');
+  return `https://github.com/${owner}.png?size=40`;
+};
+
+const getProjectColor = (name: string): string => {
+  const colors = [
+    'from-blue-500 to-cyan-500',
+    'from-purple-500 to-pink-500',
+    'from-green-500 to-emerald-500',
+    'from-red-500 to-pink-500',
+    'from-orange-500 to-red-500',
+    'from-gray-600 to-gray-800',
+    'from-green-600 to-green-800',
+    'from-cyan-500 to-blue-600',
+  ];
+  const hash = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return colors[hash % colors.length];
+};
 
 interface EcosystemDetailPageProps {
   ecosystemId: string;
@@ -17,8 +45,57 @@ export function EcosystemDetailPage({ ecosystemId, ecosystemName, onBack, onProj
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [ecosystemProjects, setEcosystemProjects] = useState<Project[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
 
-  // Mock data - in real app this would come from API
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setIsLoadingProjects(true);
+      try {
+        const res = await getPublicProjects({ ecosystem: ecosystemName, limit: 100 });
+        if (cancelled || !res?.projects) return;
+        const mapped: Project[] = (res.projects as Array<{
+          id: string;
+          github_full_name: string;
+          language: string | null;
+          tags: string[];
+          category: string | null;
+          stars_count: number;
+          forks_count: number;
+          contributors_count: number;
+          open_issues_count: number;
+          open_prs_count: number;
+          ecosystem_name: string | null;
+          description?: string | null;
+        }>).filter((p) => (p.github_full_name.split('/')[1] || '') !== '.github').map((p) => {
+          const repoName = p.github_full_name.split('/')[1] || p.github_full_name;
+          return {
+            id: p.id,
+            name: repoName,
+            icon: getProjectIcon(p.github_full_name),
+            stars: formatNumber(p.stars_count || 0),
+            forks: formatNumber(p.forks_count || 0),
+            contributors: p.contributors_count || 0,
+            openIssues: p.open_issues_count || 0,
+            prs: p.open_prs_count || 0,
+            description: (p.description && p.description.trim()) || `${repoName} project`,
+            tags: Array.isArray(p.tags) ? p.tags.slice(0, 4) : [],
+            color: getProjectColor(repoName),
+          };
+        });
+        setEcosystemProjects(mapped);
+      } catch {
+        if (!cancelled) setEcosystemProjects([]);
+      } finally {
+        if (!cancelled) setIsLoadingProjects(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [ecosystemName]);
+
+  // Mock data for overview - in real app stats could come from API
   const ecosystemData = {
     name: ecosystemName,
     logo: ecosystemName.charAt(0).toUpperCase(),
@@ -34,8 +111,8 @@ export function EcosystemDetailPage({ ecosystemId, ecosystemName, onBack, onProj
     ],
     stats: {
       activeContributors: { value: 260, change: '+12' },
-      activeProjects: { value: 24, change: '+3' },
-      availableIssues: { value: 180, change: '-5' },
+      activeProjects: { value: ecosystemProjects.length, change: '+' + ecosystemProjects.length },
+      availableIssues: { value: ecosystemProjects.reduce((s, p) => s + p.openIssues, 0), change: '-5' },
       mergedPullRequests: { value: 920, change: '+45' },
     },
     about: `The ${ecosystemName} ecosystem represents a paradigm shift towards decentralized applications, protocols, and infrastructure. This ecosystem brings together innovative projects that are building the next generation of the internet.`,
@@ -54,64 +131,10 @@ export function EcosystemDetailPage({ ecosystemId, ecosystemName, onBack, onProj
     ],
   };
 
-  const projectsData: Project[] = [
-    {
-      id: '1',
-      name: 'React Ecosystem',
-      icon: '⚛️',
-      stars: '4.9M',
-      forks: '2.6M',
-      contributors: 45,
-      openIssues: 12,
-      prs: 0,
-      description: 'A modern React framework for building user interfaces with TypeScript support',
-      tags: ['TypeScript', 'good first issue'],
-      color: 'from-blue-500 to-cyan-500',
-    },
-    {
-      id: '2',
-      name: 'Nextjs Framework',
-      icon: '▲',
-      stars: '120K',
-      forks: '24K',
-      contributors: 78,
-      openIssues: 20,
-      prs: 0,
-      description: 'The React framework for production with server-side rendering',
-      tags: ['Frontend'],
-      color: 'from-purple-500 to-pink-500',
-    },
-    {
-      id: '3',
-      name: 'Vue.js',
-      icon: 'V',
-      stars: '214K',
-      forks: '36K',
-      contributors: 94,
-      openIssues: 8,
-      prs: 0,
-      description: 'Progressive JavaScript framework for building user interfaces',
-      tags: ['Framework'],
-      color: 'from-green-500 to-emerald-500',
-    },
-    {
-      id: '4',
-      name: 'Angular',
-      icon: 'A',
-      stars: '93.5K',
-      forks: '24K',
-      contributors: 120,
-      openIssues: 35,
-      prs: 0,
-      description: 'A platform and framework for building single-page client applications',
-      tags: ['Frontend', 'TypeScript'],
-      color: 'from-red-500 to-pink-500',
-    },
-  ];
-
-  const filteredProjects = projectsData.filter(project =>
-    project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    project.description.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredProjects = ecosystemProjects.filter(
+    (project) =>
+      project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      project.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const isDark = theme === 'dark';
@@ -478,11 +501,38 @@ export function EcosystemDetailPage({ ecosystemId, ecosystemName, onBack, onProj
               />
 
               {/* Projects Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-                {filteredProjects.map(project => (
-                  <ProjectCard key={project.id} project={project} onClick={onProjectClick} />
-                ))}
-              </div>
+              {isLoadingProjects ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className={`rounded-[18px] border p-5 ${isDark ? 'bg-white/[0.08] border-white/15' : 'bg-white/[0.15] border-white/25'}`}>
+                      <SkeletonLoader className="h-11 w-11 rounded-[12px] mb-4" />
+                      <SkeletonLoader className="h-4 w-3/4 mb-2" />
+                      <SkeletonLoader className="h-3 w-full mb-1" />
+                      <SkeletonLoader className="h-3 w-5/6 mb-4" />
+                      <div className="flex gap-2 mb-4">
+                        <SkeletonLoader className="h-4 w-12" />
+                        <SkeletonLoader className="h-4 w-12" />
+                      </div>
+                      <div className="flex gap-2">
+                        <SkeletonLoader className="h-7 w-16 rounded-[8px]" />
+                        <SkeletonLoader className="h-7 w-20 rounded-[8px]" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : filteredProjects.length === 0 ? (
+                <div className={`rounded-[16px] border p-8 text-center ${isDark ? 'bg-white/[0.08] border-white/15 text-[#d4d4d4]' : 'bg-white/[0.15] border-white/25 text-[#7a6b5a]'}`}>
+                  <FolderGit2 className={`w-10 h-10 mx-auto mb-3 ${isDark ? 'text-[#b8a898]' : 'text-[#8a7b6a]'}`} />
+                  <p className="text-[14px] font-semibold">No projects in {ecosystemName} yet</p>
+                  <p className="text-[12px] mt-1">Projects added under this ecosystem will appear here.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+                  {filteredProjects.map((project) => (
+                    <ProjectCard key={project.id} project={project} onClick={onProjectClick} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

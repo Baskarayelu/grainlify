@@ -22,6 +22,7 @@ interface Project {
   language: string | null;
   tags: string[];
   category: string | null;
+  needs_metadata?: boolean;
 }
 
 interface GroupedRepository {
@@ -31,6 +32,7 @@ interface GroupedRepository {
     name: string;
     fullName: string;
     status: string;
+    needs_metadata?: boolean;
   }>;
 }
 
@@ -156,6 +158,7 @@ export function MaintainersPage({ onNavigate }: MaintainersPageProps) {
         name: repoName,
         fullName: project.github_full_name,
         status: project.status,
+        needs_metadata: project.needs_metadata,
       });
     });
 
@@ -217,6 +220,18 @@ export function MaintainersPage({ onNavigate }: MaintainersPageProps) {
 
   const handleNewProjectSetupClose = () => {
     setPendingSetupProjects((prev) => prev.slice(1));
+  };
+
+  const openSetupForProject = async (projectId: string) => {
+    try {
+      const pending = await getPendingSetupProjects();
+      const found = pending.find((p) => p.id === projectId);
+      if (found) {
+        setPendingSetupProjects([found, ...pending.filter((p) => p.id !== projectId)]);
+      }
+    } catch {
+      setPendingSetupProjects((prev) => prev);
+    }
   };
 
   return (
@@ -365,6 +380,18 @@ export function MaintainersPage({ onNavigate }: MaintainersPageProps) {
                                         }`}>
                                         Pending
                                       </span>
+                                    )}
+                                    {repo.needs_metadata && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); openSetupForProject(repo.id); }}
+                                        className={`text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 ${theme === 'dark'
+                                          ? 'bg-[#c9983a]/20 text-[#e8c77f] border border-[#c9983a]/40 hover:bg-[#c9983a]/30'
+                                          : 'bg-[#c9983a]/25 text-[#8b6f3a] border border-[#c9983a]/40 hover:bg-[#c9983a]/35'
+                                          }`}
+                                      >
+                                        Complete setup
+                                      </button>
                                     )}
                                   
                                     {repo.status === 'rejected' && (

@@ -546,7 +546,8 @@ SELECT
   p.created_at,
   p.updated_at,
   e.name AS ecosystem_name,
-  e.slug AS ecosystem_slug
+  e.slug AS ecosystem_slug,
+  p.description
 FROM projects p
 LEFT JOIN ecosystems e ON p.ecosystem_id = e.id
 WHERE %s
@@ -572,8 +573,9 @@ LIMIT $%d OFFSET $%d
 			var openIssuesCount, openPRsCount, contributorsCount int
 			var createdAt, updatedAt time.Time
 			var ecosystemName, ecosystemSlug *string
+			var description *string
 
-			if err := rows.Scan(&id, &fullName, &installationID, &language, &tagsJSON, &category, &starsCount, &forksCount, &openIssuesCount, &openPRsCount, &contributorsCount, &createdAt, &updatedAt, &ecosystemName, &ecosystemSlug); err != nil {
+			if err := rows.Scan(&id, &fullName, &installationID, &language, &tagsJSON, &category, &starsCount, &forksCount, &openIssuesCount, &openPRsCount, &contributorsCount, &createdAt, &updatedAt, &ecosystemName, &ecosystemSlug, &description); err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "projects_list_failed", "details": err.Error()})
 			}
 
@@ -593,10 +595,10 @@ LIMIT $%d OFFSET $%d
 				forks = *forksCount
 			}
 
-			// Skip per-project GitHub enrichment here to keep /projects fast.
-			// Description and live star/fork counts can be handled by background jobs
-			// or fetched on the project detail endpoint instead.
-			description := ""
+			descVal := ""
+			if description != nil {
+				descVal = *description
+			}
 
 			out = append(out, fiber.Map{
 				"id":                 id.String(),
@@ -611,7 +613,7 @@ LIMIT $%d OFFSET $%d
 				"open_prs_count":     openPRsCount,
 				"ecosystem_name":     ecosystemName,
 				"ecosystem_slug":     ecosystemSlug,
-				"description":        description,
+				"description":        descVal,
 				"created_at":         createdAt,
 				"updated_at":         updatedAt,
 			})
