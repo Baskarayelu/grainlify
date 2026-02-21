@@ -4,10 +4,10 @@ mod events;
 mod test_bounty_escrow;
 
 use events::{
-    emit_bounty_initialized, emit_funds_locked, emit_funds_refunded, emit_funds_released,
-    BountyEscrowInitialized, FundsLocked, FundsRefunded, FundsReleased, EVENT_VERSION_V2,
-    emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, BatchFundsLocked, BatchFundsReleased,
-    BountyEscrowInitialized, ClaimCancelled, ClaimCreated, ClaimExecuted
+    emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, emit_funds_locked,
+    emit_funds_refunded, emit_funds_released, BatchFundsLocked, BatchFundsReleased,
+    BountyEscrowInitialized, ClaimCancelled, ClaimCreated, ClaimExecuted, FundsLocked,
+    FundsRefunded, FundsReleased, EVENT_VERSION_V2,
 };
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
@@ -537,7 +537,6 @@ impl BountyEscrowContract {
                 admin,
                 token,
                 timestamp: env.ledger().timestamp(),
-         
             },
         );
 
@@ -891,6 +890,7 @@ impl BountyEscrowContract {
         emit_funds_locked(
             &env,
             FundsLocked {
+                version: EVENT_VERSION_V2,
                 bounty_id,
                 amount,
                 depositor: depositor.clone(),
@@ -955,6 +955,7 @@ impl BountyEscrowContract {
         emit_funds_released(
             &env,
             FundsReleased {
+                version: EVENT_VERSION_V2,
                 bounty_id,
                 amount: escrow.amount,
                 recipient: contributor.clone(),
@@ -1124,11 +1125,6 @@ impl BountyEscrowContract {
             .get(&DataKey::PendingClaim(bounty_id))
             .unwrap();
 
-        // Emit value allows for off-chain indexing
-        emit_funds_locked(
-            &env,
-            FundsLocked {
-                version: EVENT_VERSION_V2,
         if claim.claimed {
             return Err(Error::FundsNotLocked);
         }
@@ -1206,16 +1202,8 @@ impl BountyEscrowContract {
             .persistent()
             .set(&DataKey::Escrow(bounty_id), &escrow);
 
-        emit_funds_released(
-            &env,
-            FundsReleased {
-                version: EVENT_VERSION_V2,
-                bounty_id,
-                amount: escrow.amount,
-                recipient: contributor.clone(),
-                timestamp: env.ledger().timestamp(),
-            },
-        );
+        env.storage()
+            .persistent()
             .set(&DataKey::RefundApproval(bounty_id), &approval);
 
         Ok(())
@@ -1728,6 +1716,7 @@ impl BountyEscrowContract {
             emit_funds_locked(
                 &env,
                 FundsLocked {
+                    version: EVENT_VERSION_V2,
                     bounty_id: item.bounty_id,
                     amount: item.amount,
                     depositor: item.depositor.clone(),
@@ -1854,6 +1843,7 @@ impl BountyEscrowContract {
             emit_funds_released(
                 &env,
                 FundsReleased {
+                    version: EVENT_VERSION_V2,
                     bounty_id: item.bounty_id,
                     amount: escrow.amount,
                     recipient: item.contributor.clone(),
