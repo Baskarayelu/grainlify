@@ -54,6 +54,10 @@ export class ValidationError extends SDKError {
  *   - Bounty-escrow ...........................  BOUNTY_*
  *   - Governance ..............................  GOV_*
  *   - Circuit-breaker / error-recovery .......  CIRCUIT_*
+ *
+ * AMOUNT_BELOW_MIN and AMOUNT_ABOVE_MAX map to the on-chain errors
+ *   Error::AmountBelowMinimum = 8
+ *   Error::AmountAboveMaximum = 9
  */
 export enum ContractErrorCode {
   // ── Program-Escrow (original) ──────────────────────────────────────────
@@ -263,6 +267,10 @@ export function parseContractErrorByCode(
 /**
  * Parse a contract error from a Soroban response by matching the error message.
  * Falls back to a generic ContractError when no pattern matches.
+ *
+ * Checks are ordered from most-specific to least-specific so that the more
+ * descriptive min/max messages are matched before the generic INVALID_AMOUNT
+ * fallback.
  */
 export function parseContractError(error: any): ContractError {
   const errorMessage = error?.message || error?.toString() || 'Unknown contract error';
