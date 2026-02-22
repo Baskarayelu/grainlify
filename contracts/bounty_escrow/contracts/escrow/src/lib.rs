@@ -3,6 +3,9 @@ mod events;
 
 mod test_bounty_escrow;
 
+#[cfg(test)]
+mod test_rbac;
+
 use events::{
     emit_batch_funds_locked, emit_batch_funds_released, emit_bounty_initialized, emit_funds_locked,
     emit_funds_refunded, emit_funds_released, BatchFundsLocked, BatchFundsReleased,
@@ -1301,7 +1304,7 @@ impl BountyEscrowContract {
             .persistent()
             .set(&DataKey::Escrow(bounty_id), &escrow);
 
-        emit_funds_released(
+        events::emit_funds_released(
             &env,
             FundsReleased {
                 version: EVENT_VERSION_V2,
@@ -1332,21 +1335,33 @@ impl BountyEscrowContract {
             .get(&DataKey::Escrow(bounty_id))
             .unwrap();
 
-        if escrow.status != EscrowStatus::Locked && escrow.status != EscrowStatus::PartiallyRefunded {
+        if escrow.status != EscrowStatus::Locked && escrow.status != EscrowStatus::PartiallyRefunded
+        {
             return Err(Error::FundsNotLocked);
         }
 
         // GUARD 1: Block refund if there is a pending claim (Issue #391 fix)
-        if env.storage().persistent().has(&DataKey::PendingClaim(bounty_id)) {
-            let claim: ClaimRecord = env.storage().persistent().get(&DataKey::PendingClaim(bounty_id)).unwrap();
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::PendingClaim(bounty_id))
+        {
+            let claim: ClaimRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingClaim(bounty_id))
+                .unwrap();
             if !claim.claimed {
                 return Err(Error::ClaimPending);
             }
         }
 
         let now = env.ledger().timestamp();
-        let approval: Option<RefundApproval> = env.storage().persistent().get(&DataKey::RefundApproval(bounty_id));
-        
+        let approval: Option<RefundApproval> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RefundApproval(bounty_id));
+
         // Decide amount and recipient based on approval or deadline
         let (refund_amount, refund_to) = if let Some(app) = approval {
             // Early refund or specific partial refund approved by admin
@@ -1363,11 +1378,7 @@ impl BountyEscrowContract {
         let client = token::Client::new(&env, &token_addr);
 
         // Transfer funds
-        client.transfer(
-            &env.current_contract_address(),
-            &refund_to,
-            &refund_amount,
-        );
+        client.transfer(&env.current_contract_address(), &refund_to, &refund_amount);
 
         // Update escrow state
         escrow.remaining_amount -= refund_amount;
@@ -1392,8 +1403,14 @@ impl BountyEscrowContract {
             .set(&DataKey::Escrow(bounty_id), &escrow);
 
         // Clear approval if it was used
-        if env.storage().persistent().has(&DataKey::RefundApproval(bounty_id)) {
-            env.storage().persistent().remove(&DataKey::RefundApproval(bounty_id));
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::RefundApproval(bounty_id))
+        {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RefundApproval(bounty_id));
         }
 
         emit_funds_refunded(
@@ -1710,6 +1727,36 @@ impl BountyEscrowContract {
             }
         }
         results
+    }
+
+    pub fn set_anti_abuse_admin(env: Env, admin: Address) -> Result<(), Error> {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        current.require_auth();
+        anti_abuse::set_admin(&env, admin);
+        Ok(())
+    }
+
+    pub fn get_anti_abuse_admin(env: Env) -> Option<Address> {
+        anti_abuse::get_admin(&env)
+    }
+
+    pub fn set_whitelist(
+        env: Env,
+        whitelisted_address: Address,
+        whitelisted: bool,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        anti_abuse::set_whitelist(&env, whitelisted_address, whitelisted);
+        Ok(())
     }
 
     /// Retrieves the refund history for a specific bounty.
@@ -2059,10 +2106,12 @@ mod test_analytics_monitoring;
 #[cfg(test)]
 mod test_auto_refund_permissions;
 #[cfg(test)]
+mod test_dispute_resolution;
 mod test_expiration_and_dispute;
 #[cfg(test)]
+mod test_granular_pause;
+#[cfg(test)]
 mod test_pause;
-
 #[cfg(test)]
 mod escrow_status_transition_tests {
     use super::*;
@@ -2145,8 +2194,13 @@ mod escrow_status_transition_tests {
         /// Setup escrow in specific status and bypass standard locking process
         fn setup_escrow_in_state(&self, status: EscrowStatus, bounty_id: u64, amount: i128) {
             let deadline = self.env.ledger().timestamp() + 1000;
-            let escrow =
-                create_escrow_with_status(&self.env, self.depositor.clone(), amount, status, deadline);
+            let escrow = create_escrow_with_status(
+                &self.env,
+                self.depositor.clone(),
+                amount,
+                status,
+                deadline,
+            );
 
             // Mint tokens directly to the contract to bypass lock_funds logic but guarantee token transfer succeeds for valid transitions
             self.token_admin.mint(&self.contract_id, &amount);
@@ -2474,3 +2528,5 @@ mod escrow_status_transition_tests {
         );
     }
 }
+#[cfg(test)]
+mod test_query_filters;
