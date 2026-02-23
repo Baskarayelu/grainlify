@@ -378,6 +378,7 @@ pub struct ProgramData {
     pub authorized_payout_key: Address,
     pub payout_history: Vec<PayoutRecord>,
     pub token_address: Address, // Token contract address for transfers
+    pub initial_liquidity: i128, // Initial liquidity provided by creator
 }
 
 /// Storage key type for individual programs
@@ -540,8 +541,10 @@ impl ProgramEscrowContract {
         program_id: String,
         authorized_payout_key: Address,
         token_address: Address,
+        creator: Address,
+        initial_liquidity: Option<i128>,
     ) -> ProgramData {
-        Self::initialize_program(env, program_id, authorized_payout_key, token_address)
+        Self::initialize_program(env, program_id, authorized_payout_key, token_address, creator, initial_liquidity)
     }
 
     pub fn initialize_program(
@@ -549,19 +552,39 @@ impl ProgramEscrowContract {
         program_id: String,
         authorized_payout_key: Address,
         token_address: Address,
+        creator: Address,
+        initial_liquidity: Option<i128>,
     ) -> ProgramData {
         // Check if program already exists
         if env.storage().instance().has(&PROGRAM_DATA) {
             panic!("Program already initialized");
         }
 
+        let mut total_funds = 0i128;
+        let mut remaining_balance = 0i128;
+        let mut init_liquidity = 0i128;
+
+        if let Some(amount) = initial_liquidity {
+            if amount > 0 {
+                // Transfer initial liquidity from creator to contract
+                let contract_address = env.current_contract_address();
+                let token_client = token::Client::new(&env, &token_address);
+                creator.require_auth();
+                token_client.transfer(&creator, &contract_address, &amount);
+                total_funds = amount;
+                remaining_balance = amount;
+                init_liquidity = amount;
+            }
+        }
+
         let program_data = ProgramData {
             program_id: program_id.clone(),
-            total_funds: 0,
-            remaining_balance: 0,
+            total_funds,
+            remaining_balance,
             authorized_payout_key: authorized_payout_key.clone(),
             payout_history: vec![&env],
             token_address: token_address.clone(),
+            initial_liquidity: init_liquidity,
         };
 
         // Store program data
@@ -582,7 +605,7 @@ impl ProgramEscrowContract {
                 program_id,
                 authorized_payout_key,
                 token_address,
-                total_funds: 0i128,
+                total_funds,
             },
         );
 
